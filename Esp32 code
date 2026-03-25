@@ -1,0 +1,162 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include "driver/i2s.h"
+#include <ESP32Servo.h>
+
+// WIFI
+const char* ssid = "Yash";
+const char* password = "00000000";
+
+// SERVER IP
+const char* uploadURL = "http://172.17.139.36:5000/upload";
+const char* audioURL  = "http://172.17.139.36:5000/get_audio";
+
+// MIC
+#define I2S_WS 33
+#define I2S_SD 34
+#define I2S_SCK 26
+
+// AUDIO
+#define AUDIO_OUT 25
+
+// LED
+#define LED_PIN 2
+
+// SERVOS (ONLY HAND USED)
+Servo leftHand, rightHand;
+
+// ================= HAND GESTURE =================
+void handGesture() {
+
+  // Neutral
+  leftHand.write(90);
+  rightHand.write(90);
+  delay(300);
+
+  // Talking motion
+  leftHand.write(60);
+  rightHand.write(120);
+  delay(500);
+
+  leftHand.write(90);
+  rightHand.write(90);
+  delay(300);
+
+  leftHand.write(70);
+  rightHand.write(110);
+  delay(500);
+
+  leftHand.write(90);
+  rightHand.write(90);
+}
+
+// ================= MIC SETUP =================
+void setupI2S() {
+  i2s_config_t config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_I2S,
+    .dma_buf_count = 4,
+    .dma_buf_len = 512
+  };
+
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_SCK,
+    .ws_io_num = I2S_WS,
+    .data_out_num = -1,
+    .data_in_num = I2S_SD
+  };
+
+  i2s_driver_install(I2S_NUM_0, &config, 0, NULL);
+  i2s_set_pin(I2S_NUM_0, &pin_config);
+}
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(LED_PIN, OUTPUT);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+
+  setupI2S();
+
+  // Attach ONLY hand servos
+  leftHand.attach(32);
+  rightHand.attach(15);
+
+  // Neutral position
+  leftHand.write(90);
+  rightHand.write(90);
+}
+
+// ================= LOOP =================
+void loop() {
+
+  digitalWrite(LED_PIN, HIGH);
+
+  const int samples = 16000;
+  int16_t *buffer = (int16_t*)malloc(samples * sizeof(int16_t));
+
+  int16_t sample;
+  size_t bytesRead;
+  int index = 0;
+
+  // RECORD AUDIO
+  while (index < samples) {
+    i2s_read(I2S_NUM_0, &sample, sizeof(sample), &bytesRead, portMAX_DELAY);
+
+    sample = sample >> 3;
+    if (sample > 20000) sample = 20000;
+    if (sample < -20000) sample = -20000;
+
+    buffer[index++] = sample;
+  }
+
+  digitalWrite(LED_PIN, LOW);
+
+  // SEND AUDIO
+  HTTPClient http;
+  http.begin(uploadURL);
+  http.addHeader("Content-Type", "application/octet-stream");
+  http.POST((uint8_t*)buffer, samples * 2);
+  http.end();
+
+  free(buffer);
+
+  delay(1000);
+
+  // RECEIVE AUDIO
+  HTTPClient http2;
+  http2.begin(audioURL);
+  int code = http2.GET();
+
+  if (code == 200) {
+    WiFiClient *stream = http2.getStreamPtr();
+
+    // skip WAV header
+    for (int i = 0; i < 44; i++) stream->read();
+
+    while (stream->available() >= 2) {
+      uint8_t low = stream->read();
+      uint8_t high = stream->read();
+
+      int16_t sample = (high << 8) | low;
+      uint8_t dacVal = (sample >> 8) + 128;
+
+      dacWrite(AUDIO_OUT, dacVal);
+
+      delayMicroseconds(60); 
+    }
+
+    
+    handGesture();
+  }
+
+  http2.end();
+
+  delay(2000);
+}
