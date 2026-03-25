@@ -1,0 +1,83 @@
+from flask import Flask, request, send_file, Response
+import wave, os
+from openai import OpenAI
+import pyttsx3
+import whisper
+
+app = Flask(__name__)
+
+client = OpenAI(api_key="")
+engine = pyttsx3.init()
+model = whisper.load_model("base")
+
+questions = [
+    "Tell me about yourself",
+    "What are your strengths",
+    "What are your weaknesses",
+    "Why should we hire you",
+    "Where do you see yourself in five years"
+]
+
+q_index = 0
+interview_done = False
+
+def save_audio(data):
+    with wave.open("input.wav", "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(16000)
+        f.writeframes(data)
+
+def speak(text):
+    engine.save_to_file(text, "output.wav")
+    engine.runAndWait()
+
+@app.route('/')
+def home():
+    return "Interview Server Running"
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    global q_index, interview_done
+
+    audio_data = request.data
+    if len(audio_data) == 0:
+        return "No data", 400
+
+    save_audio(audio_data)
+
+    
+    result = model.transcribe("input.wav", language="en")
+    user_text = result["text"]
+    print("User:", user_text)
+
+   
+    if interview_done:
+        reply = "Interview already completed."
+
+    elif q_index == 0:
+        reply = "Hello, welcome to your interview. " + questions[q_index]
+        q_index += 1
+
+    elif q_index < len(questions):
+        reply = questions[q_index]
+        q_index += 1
+
+    else:
+        reply = "Thank you. Your interview is complete."
+        interview_done = True
+
+    print("Robot:", reply)
+
+    speak(reply)
+
+    return "OK"
+
+@app.route('/get_audio')
+def get_audio():
+    if not os.path.exists("output.wav"):
+        return Response("No audio", status=404)
+
+    return send_file("output.wav", mimetype="audio/wav")
+
+app.run(host="0.0.0.0", port=5000)
